@@ -1,8 +1,9 @@
 " Python filetype plugin for matching with % key
 " Language:     Python (ft=python)
-" Last Change:  2002 August 15
+" Last Change:	Thu 02 Oct 2003 12:12:20 PM EDT
 " Maintainer:   Benji Fisher, Ph.D. <benji@member.AMS.org>
-" Version:	0.4, for Vim 6.1
+" Version:	0.5, for Vim 6.1
+" URL:		http://www.vim.org/scripts/script.php?script_id=386 
 
 " allow user to prevent loading and prevent duplicate loading
 if exists("b:loaded_py_match") || &cp
@@ -22,10 +23,10 @@ vnoremap <buffer> <silent> g% :<C-U>call <SID>PyMatch('g%','v') <CR>m'gv``
 onoremap <buffer> <silent> g% v:<C-U>call <SID>PyMatch('g%','o') <CR>
 " Move to the start ([%) or end (]%) of the current block.
 nnoremap <buffer> <silent> [% :<C-U>call <SID>PyMatch('[%', 'n') <CR>
-vmap <buffer> [% <Esc>[%m'gv``
+vnoremap <buffer> <silent> [% :<C-U>call <SID>PyMatch('[%','v') <CR>m'gv``
 onoremap <buffer> <silent> [% v:<C-U>call <SID>PyMatch('[%', 'o') <CR>
 nnoremap <buffer> <silent> ]% :<C-U>call <SID>PyMatch(']%',  'n') <CR>
-vmap <buffer> ]% <Esc>]%m'gv``
+vnoremap <buffer> <silent> ]% :<C-U>call <SID>PyMatch(']%','v') <CR>m'gv``
 onoremap <buffer> <silent> ]% v:<C-U>call <SID>PyMatch(']%',  'o') <CR>
 
 " The rest of the file needs to be :sourced only once per session.
@@ -40,132 +41,157 @@ let s:loaded_functions = 1
 "
 " Recognize try, except, finally and if, elif, else .
 " keywords that start a block:
-let s:ini = 'try\|if'
+let s:ini1 = 'try\|if'
+" These are special, because the matching words may not have the same indent:
+let s:ini2 = 'for\|while' 
 " keywords that continue or end a block:
-let s:tail = 'except\|finally'
-let s:tail = s:tail . '\|elif\|else'
+let s:tail1 = 'except\|finally'
+let s:tail1 = s:tail1 . '\|elif\|else'
+" These go with s:ini2 :
+let s:tail2 = 'break\|continue'
 " all keywords:
-let s:all = s:ini . '\|' . s:tail
+let s:all1 = s:ini1 . '\|' . s:tail1
+let s:all2 = s:ini2 . '\|' . s:tail2
 
-function! s:PyMatch(type, mode) range
+fun! s:PyMatch(type, mode) range
+  " I have to do this before the :normal gv...
+  let cnt = v:count1
   " If this function was called from Visual mode, make sure that the cursor
   " is at the correct end of the Visual range:
   if a:mode == "v"
     execute "normal! gv\<Esc>"
   endif
-
-  let startline = line(".") " Do not change these:  needed for s:CleanUp()
-  let startcol = col(".")
-  " In case we start on a comment line, ...
-  if a:type[0] =~ '[][]'
-    let currline = s:NonComment(+1, startline-1)
-  else
-    let currline = startline
-  endif
-  let startindent = indent(currline)
-
   " Use default behavior if called as % with a count.
   if a:type == "%" && v:count
     exe "normal! " . v:count . "%"
-    return s:CleanUp('', a:mode, startline, startcol)
+    return s:CleanUp('', a:mode)
+  endif
+
+  " Do not change these:  needed for s:CleanUp()
+  let s:startline = line(".")
+  let s:startcol = col(".")
+  " In case we start on a comment line, ...
+  if a:type == '[%' || a:type == ']%'
+    let currline = s:NonComment(+1, s:startline-1)
+  else
+    let currline = s:startline
+  endif
+  let startindent = indent(currline)
+  " Set a mark before jumping.
+  normal! m'
+
+  " If called as [%, find the start of the current block.
+  " If called as ]%, find the end of the current block.
+  if a:type == '[%' || a:type == ']%'
+    while cnt > 0
+      let currline = (a:type == '[%') ?
+	    \ s:StartOfBlock(currline) : s:EndOfBlock(currline)
+      let cnt = cnt - 1
+    endwhile
+    execute currline
+    return s:CleanUp('', a:mode, '$')
   endif
 
   " If called as % or g%, decide whether to bail out.
   if a:type == '%' || a:type == 'g%'
-    let text = getline(".")
-    if strpart(text, 0, col(".")) =~ '\S\s' || text !~ '^\s*\%('. s:all .'\)'
-    " cursor not on the first WORD or no keyword so bail out
-      normal! %
-      return s:CleanUp('', a:mode, startline, startcol)
+    let text = getline(currline)
+    if strpart(text, 0, col(".")) =~ '\S\s'
+      \ || text !~ '^\s*\%(' . s:all1 . '\|' . s:all2 . '\)'
+      " cursor not on the first WORD or no keyword so bail out
+      if a:type == '%'
+	normal! %
+      endif
+      return s:CleanUp('', a:mode)
+    endif
+    " If it matches s:all2, we need to find the "for" or "while".
+    if text =~ '^\s*\%(' . s:all2 . '\)'
+      let topline = currline
+      while getline(topline) !~ '^\s*\%(' . s:ini2 . '\)'
+	let temp = s:StartOfBlock(topline)
+	if temp == topline " there is no enclosing block.
+	  return s:CleanUp('', a:mode)
+	endif
+	let topline = temp
+      endwhile
+      let topindent = indent(topline)
     endif
   endif
 
   " If called as %, look down for "elif" or "else" or up for "if".
-  if a:type == '%'
+  if a:type == '%' && text =~ '^\s*\%('. s:all1 .'\)'
     let next = s:NonComment(+1, currline)
-    while next != 0 && indent(next) > startindent
+    while next > 0 && indent(next) > startindent
       let next = s:NonComment(+1, next)
     endwhile
-    if indent(next) == startindent && getline(next) =~ '^\s*\%('.s:tail.'\)'
-      execute next
-      return s:CleanUp('', a:mode, startline, startcol, '$')
+    if next == 0 || indent(next) < startindent
+	  \ || getline(next) !~ '^\s*\%(' . s:tail1 . '\)'
+      " There are no "tail1" keywords below startline in this block.  Go to
+      " the start of the block.
+      let next = (text =~ '^\s*\%(' . s:ini1 . '\)') ?
+	    \ currline : s:StartOfBlock(currline) 
     endif
-    " If we are still here, then there are no "tail" keywords below us in this
-    " block.  Search upwards for the start of the block.
-    let next = currline
-    while next != 0 && indent(next) >= startindent
-      if indent(next) == startindent && getline(next) =~ '^\s*\%('.s:ini.'\)'
-	execute next
-	return s:CleanUp('', a:mode, startline, startcol, '$')
+    execute next
+    return s:CleanUp('', a:mode, '$')
+  endif
+
+  " If called as %, look down for "break" or "continue" or up for
+  " "for" or "while".
+  if a:type == '%' && text =~ '^\s*\%(' . s:all2 . '\)'
+    let next = s:NonComment(+1, currline)
+    while next > 0 && indent(next) > topindent
+	  \ && getline(next) !~ '^\s*\%(' . s:tail2 . '\)'
+      " Skip over nested "for" or "while" blocks:
+      if getline(next) =~ '^\s*\%(' . s:ini2 . '\)'
+	let next = s:EndOfBlock(next)
       endif
-      let next = s:NonComment(-1, next)
+      let next = s:NonComment(+1, next)
     endwhile
-    " If we are still here, there is an error in the file.  Let's do nothing.
+    if indent(next) > topindent && getline(next) =~ '^\s*\%(' . s:tail2 . '\)'
+      execute next
+    else " There are no "tail2" keywords below v:startline, so go to topline.
+      execute topline
+    endif
+    return s:CleanUp('', a:mode, '$')
   endif
 
   " If called as g%, look up for "if" or "elif" or "else" or down for any.
-  if a:type == 'g%'
-    if getline(currline) =~ '^\s*\(' . s:tail . '\)'
-      let next = s:NonComment(-1, currline)
-      while next != 0 && indent(next) > startindent
-	let next = s:NonComment(-1, next)
-      endwhile
-      if indent(next) == startindent && getline(next) =~ '^\s*\%('.s:all.'\)'
-	execute next
-	return s:CleanUp('', a:mode, startline, startcol, '$')
-      endif
+  if a:type == 'g%' && text =~ '^\s*\%('. s:all1 .'\)'
+    " If we started at the top of the block, go down to the end of the block.
+    if text =~ '^\s*\(' . s:ini1 . '\)'
+      let next = s:EndOfBlock(currline)
     else
-      " We started at the top of the block.
-      " Search down for the end of the block.
-      let next = s:NonComment(+1, currline)
-      while next != 0 && indent(next) >= startindent
-	if indent(next) == startindent
-	  if getline(next) =~ '^\s*\('.s:tail.'\)'
-	    let currline = next
-	  else
-	    break
-	  endif
-	endif
-	let next = s:NonComment(+1, next)
-      endwhile
-      execute currline
-      return s:CleanUp('', a:mode, startline, startcol, '$')
+      let next = s:NonComment(-1, currline)
     endif
+    while next > 0 && indent(next) > startindent
+      let next = s:NonComment(-1, next)
+    endwhile
+    if indent(next) == startindent && getline(next) =~ '^\s*\%('.s:all1.'\)'
+      execute next
+    endif
+    return s:CleanUp('', a:mode, '$')
   endif
 
-  " If called as [%, find the start of the current block.
-  if a:type == '[%'
-    let tailflag = (getline(currline) =~ '^\s*\(' . s:tail . '\)')
-    let prevline = s:NonComment(-1, currline)
-    while prevline > 0
-      if indent(prevline) < startindent ||
-	    \ tailflag && indent(prevline) == startindent &&
-	    \ getline(prevline) =~ '^\s*\(' . s:ini . '\)'
-	  " Found the start of block, so go there!
-	  execute prevline
-	  return s:CleanUp('', a:mode, startline, startcol, '$')
+  " If called as g%, look up for "for" or "while" or down for any.
+  if a:type == 'g%' && text =~ '^\s*\%(' . s:all2 . '\)'
+    " Start at topline .  If we started on a "for" or "while" then topline is
+    " the same as currline, and we want the last "break" or "continue" in the
+    " block.  Otherwise, we want the last one before currline.
+    let botline = (topline == currline) ? line("$") + 1 : currline
+    let currline = topline
+    let next = s:NonComment(+1, currline)
+    while next < botline && indent(next) > topindent
+      if getline(next) =~ '^\s*\%(' . s:tail2 . '\)'
+	let currline = next
+      elseif getline(next) =~ '^\s*\%(' . s:ini2 . '\)'
+	" Skip over nested "for" or "while" blocks:
+	let next = s:EndOfBlock(next)
       endif
-      let prevline = s:NonComment(-1, prevline)
+      let next = s:NonComment(+1, next)
     endwhile
-  endif
-
-  " If called as ]%, find the end of the current block.
-  if a:type == ']%'
-    let nextline = s:NonComment(+1, currline)
-    let startofblock = (indent(nextline) > startindent)
-    while  nextline > 0
-      if indent(nextline) < startindent ||
-	  \ startofblock && indent(nextline) == startindent &&
-	    \ getline(nextline) !~ '^\s*\(' . s:tail . '\)'
-	break
-      endif
-      let currline = nextline
-      let nextline = s:NonComment(+1, currline)
-    endwhile
-    " nextline is in the next block or after EOF, so go to currline:
     execute currline
-    return s:CleanUp('', a:mode, startline, startcol, '$')
+    return s:CleanUp('', a:mode, '$')
   endif
+
 endfun
 
 " Return the line number of the next non-comment, or 0 if there is none.
@@ -187,9 +213,54 @@ fun! s:NonComment(inc, ...)
   return 0  " If the while loop finishes, we fell off the end of the file.
 endfun
 
+" Return the line number of the top of the block containing Line a:start .
+" For most lines, this is the first previous line with smaller indent.
+" For lines starting with "except", "finally", "elif", or "else", this is the
+" first previous line starting with "try" or "if".
+fun! s:StartOfBlock(start)
+  let startindent = indent(a:start)
+  let tailflag = (getline(a:start) =~ '^\s*\(' . s:tail1 . '\)')
+  let prevline = s:NonComment(-1, a:start)
+  while prevline > 0
+    if indent(prevline) < startindent ||
+	  \ tailflag && indent(prevline) == startindent &&
+	  \ getline(prevline) =~ '^\s*\(' . s:ini1 . '\)'
+      " Found the start of block!
+      return prevline
+    endif
+    let prevline = s:NonComment(-1, prevline)
+  endwhile
+  " If the loop completes, then s:NonComment() returned 0, so we are at the
+  " top.
+  return a:start
+endfun
+
+" Return the line number of the end of the block containing Line a:start .
+" For most lines, this is the line before the next line with smaller indent.
+" For lines that begin a block, go to the end of that block, with special
+" treatment for "if" and "try" blocks.
+fun! s:EndOfBlock(start)
+  let startindent = indent(a:start)
+  let currline = a:start
+  let nextline = s:NonComment(+1, currline)
+  let startofblock = (indent(nextline) > startindent) ||
+	\ getline(currline) =~ '^\s*\(' . s:ini1 . '\)'
+  while  nextline > 0
+    if indent(nextline) < startindent ||
+	  \ startofblock && indent(nextline) == startindent &&
+	  \ getline(nextline) !~ '^\s*\(' . s:tail1 . '\)'
+      break
+    endif
+    let currline = nextline
+    let nextline = s:NonComment(+1, currline)
+  endwhile
+  " nextline is in the next block or after EOF, so return currline:
+  return currline
+endfun
+
 " Restore options and do some special handling for Operator-pending mode.
 " The optional argument is the tail of the matching group.
-fun! s:CleanUp(options, mode, startline, startcol, ...)
+fun! s:CleanUp(options, mode, ...)
   if strlen(a:options)
     execute "set" a:options
   endif
@@ -201,13 +272,13 @@ fun! s:CleanUp(options, mode, startline, startcol, ...)
   " In Operator-pending mode, we want to include the whole match
   " (for example, d%).
   " This is only a problem if we end up moving in the forward direction.
-  elseif a:startline < line(".") ||
-        \ a:startline == line(".") && a:startcol < col(".")
+  elseif s:startline < line(".") ||
+        \ s:startline == line(".") && s:startcol < col(".")
     if a:0
       " If we want to include the whole line then a:1 should be '$' .
       silent! call search(a:1)
     endif
-  endif " a:mode != "o" && etc.
+  endif " a:mode != "o"
   return 0
 endfun
 
